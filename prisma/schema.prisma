@@ -1,0 +1,55 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Staff {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  staffName String
+  jobType   String
+  workplace String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  records   Record[]
+}
+
+model Facility {
+  id   String @id @default(cuid())
+  name String @unique
+}
+
+model PidMaster {
+  pid         String @id
+  patientName String
+  createdAt   DateTime @default(now())
+}
+
+model Record {
+  id               String   @id @default(cuid())
+  timestamp        DateTime @default(now())
+  staffId          String
+  staff            Staff    @relation(fields: [staffId], references: [id])
+  staffName        String
+  jobType          String
+  workplace        String
+  facilityName     String
+  maskedUtterance  String
+  patientId        String
+  eventType        String
+
+  @@index([staffId, timestamp])
+  @@index([timestamp])
+}
+
+model AccessLog {
+  id        String   @id @default(cuid())
+  timestamp DateTime @default(now())
+  email     String?
+  action    String
+  details   String
+}
