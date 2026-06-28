@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getStaffByEmail, writeLog } from "@/lib/records";
+import { normalizeUser } from "@/lib/records";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -9,21 +9,20 @@ export async function GET(request: Request) {
     return NextResponse.json({ success: true, isRegistered: false, reason: "email_blank" });
   }
 
-  try {
-    const user = await getStaffByEmail(email);
-    if (user) {
-      return NextResponse.json({ success: true, isRegistered: true, user });
-    }
-    return NextResponse.json({ success: true, isRegistered: false, email });
-  } catch (err) {
-    return NextResponse.json({
-      success: false,
-      error: err instanceof Error ? err.message : "Unknown error",
-    });
-  }
+  return NextResponse.json({
+    success: true,
+    isRegistered: false,
+    email,
+    message: "スタッフ情報は端末に保存されます。",
+  });
 }
 
-export async function POST() {
-  await writeLog("ログイン", "アプリを起動しました");
-  return NextResponse.json({ success: true });
+export async function POST(request: Request) {
+  try {
+    const body = await request.json().catch(() => ({}));
+    const user = normalizeUser(body.user);
+    return NextResponse.json({ success: true, user });
+  } catch {
+    return NextResponse.json({ success: true });
+  }
 }

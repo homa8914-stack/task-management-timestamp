@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/db";
 import { extractUserInfo } from "@/lib/claude";
-import { writeLog } from "@/lib/records";
+import { buildUserEmail, normalizeUser, writeLog } from "@/lib/records";
 
 export async function POST(request: Request) {
   try {
@@ -24,36 +23,22 @@ export async function POST(request: Request) {
     }
 
     const userEmail =
-      email ||
-      `local_${extracted.staffName}_${extracted.jobType}_${extracted.workplace}`.replace(/\s/g, "_");
+      email || buildUserEmail(extracted.staffName, extracted.jobType, extracted.workplace);
 
-    const user = await prisma.staff.upsert({
-      where: { email: userEmail },
-      create: {
-        email: userEmail,
-        staffName: extracted.staffName,
-        jobType: extracted.jobType,
-        workplace: extracted.workplace,
-      },
-      update: {
-        staffName: extracted.staffName,
-        jobType: extracted.jobType,
-        workplace: extracted.workplace,
-      },
-    });
+    const user = normalizeUser({
+      id: userEmail,
+      email: userEmail,
+      staffName: extracted.staffName,
+      jobType: extracted.jobType,
+      workplace: extracted.workplace,
+    })!;
 
     await writeLog("セットアップ", `${user.staffName}さんとして登録`, userEmail);
 
     return NextResponse.json({
       success: true,
       message: `${user.staffName}さんとしてセットしました`,
-      user: {
-        id: user.id,
-        email: user.email,
-        staffName: user.staffName,
-        jobType: user.jobType,
-        workplace: user.workplace,
-      },
+      user,
     });
   } catch (err) {
     return NextResponse.json(

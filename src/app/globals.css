@@ -288,6 +288,26 @@ input[type="text"]:last-of-type {
   background: #f0e8f8;
   color: #6a3a8a;
 }
+.b-injection {
+  background: #ffe8ec;
+  color: #a03050;
+}
+.b-drip {
+  background: #e0eef8;
+  color: #205a8a;
+}
+.b-vital {
+  background: #e8f5e8;
+  color: #2a6a2a;
+}
+.b-procedure {
+  background: #ede8f8;
+  color: #5a3a8a;
+}
+.b-chart {
+  background: #f5f0e8;
+  color: #6a5a30;
+}
 .b-unknown {
   background: #f0f0f0;
   color: #707070;
@@ -459,6 +479,98 @@ input[type="text"]:last-of-type {
   text-align: center;
   padding: 20px 0;
   line-height: 1.8;
+}
+
+.patient-picker {
+  margin-bottom: 12px;
+}
+
+.patient-picker-optional {
+  margin-bottom: 12px;
+}
+
+.patient-picker-optional summary {
+  font-size: 13px;
+  font-weight: 600;
+  color: #8a5560;
+  cursor: pointer;
+  margin-bottom: 10px;
+  list-style: none;
+}
+
+.patient-picker-optional summary::-webkit-details-marker {
+  display: none;
+}
+
+.patient-picker-optional summary::before {
+  content: "▸ ";
+  color: #c0535c;
+}
+
+.patient-picker-optional[open] summary::before {
+  content: "▾ ";
+}
+
+.patient-picker-label {
+  font-size: 12px;
+  color: #b07070;
+  margin-bottom: 8px;
+}
+
+.patient-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.patient-chip {
+  padding: 8px 14px;
+  border-radius: 20px;
+  border: 1.5px solid #f4c0c5;
+  background: #fff;
+  color: #3a2020;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.patient-chip.selected {
+  background: #fea3aa;
+  border-color: #fea3aa;
+  color: #fff;
+}
+
+.patient-add-row {
+  display: flex;
+  gap: 8px;
+}
+
+.patient-add-row input {
+  flex: 1;
+  margin-bottom: 0 !important;
+}
+
+.patient-add-btn {
+  flex-shrink: 0;
+  padding: 0 16px;
+  border-radius: 12px;
+  border: none;
+  background: #fff0f1;
+  color: #c0535c;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.privacy-note {
+  font-size: 12px;
+  color: #8a5560;
+  line-height: 1.5;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: #fff0f1;
+  border-radius: 10px;
 }
 
 .app-root {

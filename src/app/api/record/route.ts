@@ -1,49 +1,74 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/db";
-import { extractRecordInfo } from "@/lib/claude";
-import { generatePid, maskUtterance } from "@/lib/hash";
+import { extractEventInfo, type ParsedEvent } from "@/lib/claude";
+import { requiresPatientSelection } from "@/lib/events";
 import {
-  calcSummaryDeterministic,
+  buildDailySummaries,
+  facilitySummaryToArray,
   summaryToArray,
-  type RecordEvent,
 } from "@/lib/summary";
+import {
+  appendRecordRowsToSheet,
+  assertSheetsConfigured,
+  isSheetsConfigured,
+  syncDailySummariesToSheet,
+  type SheetRecordRow,
+} from "@/lib/sheets";
 import {
   formatTimeLocal,
   getFacilityList,
-  getStaffByEmail,
+  getTodayRecordEvents,
   getTodayRange,
+  normalizeUser,
   writeLog,
   type UserInfo,
 } from "@/lib/records";
 
+function resolvePatientId(eventType: string, selectedPatientPid?: string | null): string {
+  if (requiresPatientSelection(eventType)) {
+    if (!selectedPatientPid) {
+      throw new Error(
+        "患者に紐づく記録（診療・注射・点滴など）には、患者をタップで選んでください。"
+      );
+    }
+    return selectedPatientPid;
+  }
+  return "不明";
+}
+
+function mergeEvents(
+  events: ParsedEvent[],
+  selectedPatientPid?: string | null
+): Array<ParsedEvent & { patientId: string }> {
+  return events.map((ev) => ({
+    ...ev,
+    patientId: resolvePatientId(ev.eventType, selectedPatientPid),
+  }));
+}
+
 export async function POST(request: Request) {
   try {
+    if (!isSheetsConfigured()) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Google Sheets が未設定です。環境変数 GOOGLE_SHEETS_* を設定してください。",
+        },
+        { status: 503 }
+      );
+    }
+
     const body = await request.json();
-    const { utterance, user: cachedUser } = body as {
+    const { utterance, user: cachedUser, selectedPatientPid } = body as {
       utterance: string;
       user: UserInfo;
+      selectedPatientPid?: string | null;
     };
 
     if (!utterance?.trim()) {
       return NextResponse.json({ success: false, error: "発話内容が空です。" }, { status: 400 });
     }
 
-    let user: UserInfo | null = null;
-    if (cachedUser?.email) {
-      user = await getStaffByEmail(cachedUser.email);
-    }
-    if (!user && cachedUser?.id) {
-      const staff = await prisma.staff.findUnique({ where: { id: cachedUser.id } });
-      if (staff) {
-        user = {
-          id: staff.id,
-          email: staff.email,
-          staffName: staff.staffName,
-          jobType: staff.jobType,
-          workplace: staff.workplace,
-        };
-      }
-    }
+    const user = normalizeUser(cachedUser);
     if (!user) {
       return NextResponse.json(
         { success: false, error: "ユーザー設定がされていません。" },
@@ -52,53 +77,41 @@ export async function POST(request: Request) {
     }
 
     const facilityList = await getFacilityList();
-    const events = await extractRecordInfo(utterance, facilityList);
-    const timestamp = new Date();
-    const patientMap: Record<string, string> = {};
-
-    for (const ev of events) {
-      const pid = generatePid(ev.patientName);
-      if (ev.patientName && ev.patientName !== "不明" && ev.patientName !== "解析失敗") {
-        patientMap[pid] = ev.patientName;
-        await prisma.pidMaster.upsert({
-          where: { pid },
-          create: { pid, patientName: ev.patientName },
-          update: {},
-        });
-      }
-
-      await prisma.record.create({
-        data: {
-          timestamp,
-          staffId: user.id,
-          staffName: user.staffName,
-          jobType: user.jobType,
-          workplace: user.workplace,
-          facilityName: ev.facilityName,
-          maskedUtterance: maskUtterance(utterance, ev.patientName),
-          patientId: pid,
-          eventType: ev.eventType,
-        },
-      });
+    let rawEvents: ParsedEvent[];
+    try {
+      rawEvents = await extractEventInfo(utterance, facilityList);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "解析に失敗しました";
+      await writeLog("AI解析エラー", message, user.email);
+      return NextResponse.json({ success: false, error: message }, { status: 502 });
     }
 
-    const { start, end, todayStr } = getTodayRange();
-    const todayRecords = await prisma.record.findMany({
-      where: {
-        staffId: user.id,
-        timestamp: { gte: start, lte: end },
-      },
-      orderBy: { timestamp: "asc" },
-    });
+    let events;
+    try {
+      events = mergeEvents(rawEvents, selectedPatientPid);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "患者未選択";
+      return NextResponse.json({ success: false, error: message }, { status: 400 });
+    }
 
-    const recordEvents: RecordEvent[] = todayRecords.map((r) => ({
-      time: r.timestamp,
-      facility: r.facilityName,
-      pid: r.patientId,
-      eventType: r.eventType,
+    const timestamp = new Date();
+    const sheetRows: SheetRecordRow[] = events.map((ev) => ({
+      timestamp,
+      staffName: user.staffName,
+      jobType: user.jobType,
+      workplace: user.workplace,
+      facilityName: ev.facilityName,
+      maskedUtterance: utterance.trim(),
+      patientId: ev.patientId,
+      eventType: ev.eventType,
     }));
 
-    const summary = calcSummaryDeterministic(
+    assertSheetsConfigured();
+    await appendRecordRowsToSheet(sheetRows);
+
+    const { todayStr } = getTodayRange();
+    const recordEvents = await getTodayRecordEvents(user, todayStr);
+    const { patientSummary, facilitySummary } = buildDailySummaries(
       recordEvents,
       user.staffName,
       user.jobType,
@@ -106,15 +119,17 @@ export async function POST(request: Request) {
       todayStr
     );
 
+    await syncDailySummariesToSheet(patientSummary, facilitySummary, todayStr);
+
     const timeStr = formatTimeLocal(timestamp);
     const rowsForClient = events.map((ev) => [
       timeStr,
-      user!.staffName,
-      user!.jobType,
-      user!.workplace,
+      user.staffName,
+      user.jobType,
+      user.workplace,
       ev.facilityName,
       utterance,
-      ev.patientName,
+      ev.patientId,
       ev.eventType,
     ]);
 
@@ -124,8 +139,9 @@ export async function POST(request: Request) {
       success: true,
       message: `${user.staffName}さんの業務記録を処理しました`,
       data: rowsForClient,
-      summary: summary.map(summaryToArray),
-      patientMap,
+      summary: patientSummary.map(summaryToArray),
+      facilitySummary: facilitySummary.map(facilitySummaryToArray),
+      sheetsSynced: true,
     });
   } catch (err) {
     return NextResponse.json(

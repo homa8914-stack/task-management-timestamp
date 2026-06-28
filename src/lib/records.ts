@@ -1,16 +1,14 @@
-import { prisma } from "./db";
+import {
+  addFacilityToSheet,
+  getFacilityListFromSheet,
+  isSheetsConfigured,
+  readTodayRecordsFromSheet,
+} from "./sheets";
+import type { RecordEvent } from "./summary";
 
 export async function writeLog(action: string, details: string, email?: string | null) {
-  try {
-    await prisma.accessLog.create({
-      data: {
-        action,
-        details,
-        email: email || null,
-      },
-    });
-  } catch {
-    // logging should not break main flow
+  if (process.env.NODE_ENV === "development") {
+    console.log("[log]", action, details, email ?? "");
   }
 }
 
@@ -45,19 +43,46 @@ export type UserInfo = {
   email: string;
 };
 
-export async function getStaffByEmail(email: string): Promise<UserInfo | null> {
-  const staff = await prisma.staff.findUnique({ where: { email } });
-  if (!staff) return null;
+export function buildUserEmail(staffName: string, jobType: string, workplace: string): string {
+  return `local_${staffName}_${jobType}_${workplace}`.replace(/\s/g, "_");
+}
+
+export function normalizeUser(raw: Partial<UserInfo> | null | undefined): UserInfo | null {
+  if (!raw?.staffName || !raw.jobType || !raw.workplace) return null;
+  const email = raw.email || buildUserEmail(raw.staffName, raw.jobType, raw.workplace);
   return {
-    id: staff.id,
-    staffName: staff.staffName,
-    jobType: staff.jobType,
-    workplace: staff.workplace,
-    email: staff.email,
+    id: raw.id || email,
+    email,
+    staffName: raw.staffName,
+    jobType: raw.jobType,
+    workplace: raw.workplace,
   };
 }
 
+export async function getStaffByEmail(_email: string): Promise<UserInfo | null> {
+  return null;
+}
+
 export async function getFacilityList(): Promise<string[]> {
-  const facilities = await prisma.facility.findMany({ orderBy: { name: "asc" } });
-  return facilities.map((f) => f.name);
+  if (!isSheetsConfigured()) return [];
+  return getFacilityListFromSheet();
+}
+
+export async function addFacility(name: string): Promise<void> {
+  await addFacilityToSheet(name);
+}
+
+export async function getTodayRecordEvents(user: UserInfo, todayStr: string): Promise<RecordEvent[]> {
+  const rows = await readTodayRecordsFromSheet(
+    user.staffName,
+    user.jobType,
+    user.workplace,
+    todayStr
+  );
+  return rows.map((r) => ({
+    time: r.timestamp,
+    facility: r.facilityName,
+    pid: r.patientId,
+    eventType: r.eventType,
+  }));
 }

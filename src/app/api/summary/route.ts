@@ -1,43 +1,32 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/db";
 import {
-  calcSummaryDeterministic,
+  buildDailySummaries,
+  facilitySummaryToArray,
   summaryToArray,
-  type RecordEvent,
 } from "@/lib/summary";
-import { getStaffByEmail, getTodayRange } from "@/lib/records";
-import type { UserInfo } from "@/lib/records";
+import { isSheetsConfigured } from "@/lib/sheets";
+import { getTodayRange, getTodayRecordEvents, normalizeUser, type UserInfo } from "@/lib/records";
 
 export async function POST(request: Request) {
   try {
+    if (!isSheetsConfigured()) {
+      return NextResponse.json(
+        { success: false, error: "Google Sheets が未設定です。" },
+        { status: 503 }
+      );
+    }
+
     const body = await request.json();
     const { user: cachedUser } = body as { user: UserInfo };
 
-    let user: UserInfo | null = null;
-    if (cachedUser?.email) {
-      user = await getStaffByEmail(cachedUser.email);
-    }
+    const user = normalizeUser(cachedUser);
     if (!user) {
       return NextResponse.json({ success: false, error: "未登録" }, { status: 401 });
     }
 
-    const { start, end, todayStr } = getTodayRange();
-    const todayRecords = await prisma.record.findMany({
-      where: {
-        staffId: user.id,
-        timestamp: { gte: start, lte: end },
-      },
-      orderBy: { timestamp: "asc" },
-    });
-
-    const recordEvents: RecordEvent[] = todayRecords.map((r) => ({
-      time: r.timestamp,
-      facility: r.facilityName,
-      pid: r.patientId,
-      eventType: r.eventType,
-    }));
-
-    const summary = calcSummaryDeterministic(
+    const { todayStr } = getTodayRange();
+    const recordEvents = await getTodayRecordEvents(user, todayStr);
+    const { patientSummary, facilitySummary } = buildDailySummaries(
       recordEvents,
       user.staffName,
       user.jobType,
@@ -47,7 +36,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       success: true,
-      summary: summary.map(summaryToArray),
+      summary: patientSummary.map(summaryToArray),
+      facilitySummary: facilitySummary.map(facilitySummaryToArray),
     });
   } catch (err) {
     return NextResponse.json(
@@ -57,22 +47,9 @@ export async function POST(request: Request) {
   }
 }
 
-export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const staffId = searchParams.get("staffId");
-
-  if (!staffId) {
-    return NextResponse.json({ success: false, error: "staffId required" }, { status: 400 });
-  }
-
-  const { start, end } = getTodayRange();
-  const logs = await prisma.record.findMany({
-    where: {
-      staffId,
-      timestamp: { gte: start, lte: end },
-    },
-    orderBy: { timestamp: "desc" },
+export async function GET() {
+  return NextResponse.json({
+    success: true,
+    message: "集計は POST で user を送ってください。",
   });
-
-  return NextResponse.json({ success: true, logs });
 }

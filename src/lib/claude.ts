@@ -1,4 +1,26 @@
+import { loadEnvConfig } from "@next/env";
+import {
+  claudeEventMappingHints,
+  eventTypesForClaudePrompt,
+  normalizeEventType,
+} from "./events";
+
+let envLoaded = false;
+
+function ensureEnvLoaded() {
+  if (!envLoaded) {
+    loadEnvConfig(process.cwd());
+    envLoaded = true;
+  }
+}
+
 export type ParsedEvent = {
+  eventType: string;
+  facilityName: string;
+};
+
+/** @deprecated 患者名をAIに送る旧方式。extractEventInfo を使用 */
+export type ParsedEventLegacy = {
   patientName: string;
   eventType: string;
   facilityName: string;
@@ -10,9 +32,22 @@ export type StaffInfo = {
   workplace: string;
 };
 
-async function callClaude(prompt: string, maxTokens: number): Promise<string | null> {
-  const apiKey = process.env.CLAUDE_API_KEY;
-  if (!apiKey) throw new Error("CLAUDE_API_KEY が設定されていません");
+function getApiKey(): string {
+  ensureEnvLoaded();
+  const raw = process.env.CLAUDE_API_KEY?.trim() ?? "";
+  const key = raw.replace(/^["']|["']$/g, "");
+  if (!key) throw new Error("CLAUDE_API_KEY が設定されていません");
+  return key;
+}
+
+function getModel(): string {
+  ensureEnvLoaded();
+  return process.env.CLAUDE_MODEL?.trim() || "claude-sonnet-4-6";
+}
+
+async function callClaude(prompt: string, maxTokens: number): Promise<string> {
+  const apiKey = getApiKey();
+  const model = getModel();
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -22,15 +57,28 @@ async function callClaude(prompt: string, maxTokens: number): Promise<string | n
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model,
       max_tokens: maxTokens,
       messages: [{ role: "user", content: prompt }],
     }),
   });
 
   const result = await response.json();
-  if (!result.content?.[0]?.text) return null;
-  return result.content[0].text.trim();
+
+  if (!response.ok) {
+    const msg =
+      result?.error?.message ||
+      `HTTP ${response.status}: Claude API への接続に失敗しました`;
+    console.error("[Claude API]", msg, { model, status: response.status });
+    throw new Error(msg);
+  }
+
+  const text = result.content?.[0]?.text?.trim();
+  if (!text) {
+    throw new Error("Claude API から空の応答が返されました");
+  }
+
+  return text;
 }
 
 function extractJson<T>(text: string, startChar: "{" | "["): T | null {
@@ -53,19 +101,58 @@ export async function extractUserInfo(utterance: string): Promise<StaffInfo> {
 
   try {
     const raw = await callClaude(prompt, 256);
-    if (!raw) return fallback;
     return extractJson<StaffInfo>(raw, "{") || fallback;
-  } catch {
+  } catch (err) {
+    console.error("[extractUserInfo]", err);
     return fallback;
   }
 }
 
-export async function extractRecordInfo(
+export async function extractEventInfo(
   utterance: string,
   facilityList: string[]
 ): Promise<ParsedEvent[]> {
-  const fail = [{ patientName: "解析失敗", eventType: "解析失敗", facilityName: "解析失敗" }];
+  const facilityInstruction =
+    facilityList.length > 0
+      ? `【重要】「facilityName」は、必ず以下の【施設リスト】の中から、発話内容に最も関係が深いと思われるものを「完全一致」で1つ選んでください。略称や言い換えもリストにある名称へ厳格にマッピングしてください。リストに類似するものが全く該当しない場合のみ「不明」としてください。
 
+【施設リスト】
+${facilityList.join("\n")}`
+      : `「facilityName」には、発話内容から施設名や場所が読み取れる場合はそれを抽出し、無ければ「不明」としてください。`;
+
+  const prompt = `以下の発話内容に含まれる業務イベントをすべて抽出し、指定のJSON配列形式のみで返してください。
+イベント種別は次のいずれかに厳密に合わせてください:「${eventTypesForClaudePrompt()}」「不明」
+
+${claudeEventMappingHints()}
+
+【重要】患者名・人名・イニシャルは抽出しないでください。患者に関するイベントでも patientName フィールドは含めません。
+
+${facilityInstruction}
+
+発話内容: ${utterance}
+
+返却形式:
+[{"eventType": "イベント種別", "facilityName": "施設名"}]`;
+
+  const raw = await callClaude(prompt, 512);
+  const parsed = extractJson<ParsedEvent[]>(raw, "[");
+
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    console.error("[extractEventInfo] JSON parse failed:", raw.slice(0, 200));
+    throw new Error("発話内容の解析に失敗しました（JSON形式エラー）");
+  }
+
+  return parsed.map((ev) => ({
+    eventType: normalizeEventType(ev.eventType || "不明"),
+    facilityName: ev.facilityName || "不明",
+  }));
+}
+
+/** @deprecated extractEventInfo を使用（患者名をAIに送らない） */
+export async function extractRecordInfo(
+  utterance: string,
+  facilityList: string[]
+): Promise<ParsedEventLegacy[]> {
   const facilityInstruction =
     facilityList.length > 0
       ? `【重要】「facilityName」は、必ず以下の【施設リスト】の中から、発話内容に最も関係が深いと思われるものを「完全一致」で1つ選んでください。略称や言い換えもリストにある名称へ厳格にマッピングしてください。リストに類似するものが全く該当しない場合のみ「不明」としてください。
@@ -84,19 +171,17 @@ ${facilityInstruction}
 返却形式:
 [{"patientName": "患者名", "eventType": "イベント種別", "facilityName": "施設名"}]`;
 
-  try {
-    const raw = await callClaude(prompt, 512);
-    if (!raw) return fail;
+  const raw = await callClaude(prompt, 512);
+  const parsed = extractJson<ParsedEventLegacy[]>(raw, "[");
 
-    const parsed = extractJson<ParsedEvent[]>(raw, "[");
-    if (!Array.isArray(parsed)) return fail;
-
-    return parsed.map((ev) => ({
-      patientName: ev.patientName || "不明",
-      eventType: ev.eventType || "不明",
-      facilityName: ev.facilityName || "不明",
-    }));
-  } catch {
-    return fail;
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    console.error("[extractRecordInfo] JSON parse failed:", raw.slice(0, 200));
+    throw new Error("発話内容の解析に失敗しました（JSON形式エラー）");
   }
+
+  return parsed.map((ev) => ({
+    patientName: ev.patientName || "不明",
+    eventType: ev.eventType || "不明",
+    facilityName: ev.facilityName || "不明",
+  }));
 }
