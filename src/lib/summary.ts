@@ -3,7 +3,6 @@ import {
   FACILITY_TASK_PAIRS,
   FACILITY_WORK_PID,
   isWorkStartEvent,
-  PATIENT_TASK_PAIRS,
   TASK_PAIRS,
 } from "./events";
 
@@ -42,19 +41,34 @@ export type FacilitySummaryRow = {
   totalTime: number | "";
 };
 
+export type TaskTypeSummaryRow = {
+  date: string;
+  staffName: string;
+  jobType: string;
+  workplace: string;
+  taskLabel: string;
+  workMinutes: number;
+  sharePercent: number;
+};
+
 export function buildDailySummaries(
   records: RecordEvent[],
   staffName: string,
   jobType: string,
   workplace: string,
   today: string
-): { patientSummary: SummaryRow[]; facilitySummary: FacilitySummaryRow[] } {
+): {
+  patientSummary: SummaryRow[];
+  facilitySummary: FacilitySummaryRow[];
+  taskSummary: TaskTypeSummaryRow[];
+} {
   const patientSummary = [
     ...calcSummaryDeterministic(records, staffName, jobType, workplace, today),
     ...calcFacilityTaskSummary(records, staffName, jobType, workplace, today),
   ];
+  const taskSummary = calcTaskTypeSummary(records, staffName, jobType, workplace, today);
   const facilitySummary = calcFacilitySummary(patientSummary, records, staffName, jobType, workplace, today);
-  return { patientSummary, facilitySummary };
+  return { patientSummary, facilitySummary, taskSummary };
 }
 
 export function calcSummaryDeterministic(
@@ -77,9 +91,9 @@ export function calcSummaryDeterministic(
     let workMinutes = 0;
     let hasWorkPair = false;
 
-    for (const pair of PATIENT_TASK_PAIRS) {
-      const duration = pairTaskDuration(patientEvents, pair.start, pair.end);
-      if (duration !== null) {
+    for (const pair of TASK_PAIRS) {
+      const duration = sumAllPairDurations(patientEvents, pair.start, pair.end);
+      if (duration > 0) {
         workMinutes += duration;
         hasWorkPair = true;
         completedLabels.push(pair.label);
@@ -154,7 +168,7 @@ export function calcSummaryDeterministic(
   return results;
 }
 
-/** 施設名だけで記録する業務（カルテ記載など） */
+/** 施設名だけで記録する業務（診療・カルテ記載など） */
 function calcFacilityTaskSummary(
   records: RecordEvent[],
   staffName: string,
@@ -163,45 +177,89 @@ function calcFacilityTaskSummary(
   today: string
 ): SummaryRow[] {
   const events = [...records].sort((a, b) => a.time.getTime() - b.time.getTime());
+  const arriveTravelAssigned = new Set<string>();
   const facilities = [
     ...new Set(
-      events
-        .filter((e) => isFacilityTaskEvent(e.eventType) && e.facility && e.facility !== "不明")
-        .map((e) => e.facility)
+      events.filter((e) => e.facility && e.facility !== "不明" && e.facility !== "解析失敗").map((e) => e.facility)
     ),
   ];
 
   const results: SummaryRow[] = [];
 
   for (const facility of facilities) {
-    const facilityEvents = events.filter((e) => e.facility === facility && isFacilityTaskEvent(e.eventType));
+    const atFacility = events.filter((e) => e.facility === facility);
+    const taskEvents = atFacility.filter((e) => isFacilityTaskEvent(e.eventType));
+    if (!taskEvents.length && !atFacility.some((e) => e.eventType === "到着")) continue;
 
     let workMinutes = 0;
     const completedLabels: string[] = [];
 
     for (const pair of FACILITY_TASK_PAIRS) {
-      const duration = pairTaskDuration(facilityEvents, pair.start, pair.end);
-      if (duration !== null) {
+      const duration = sumAllPairDurations(taskEvents, pair.start, pair.end);
+      if (duration > 0) {
         workMinutes += duration;
         completedLabels.push(pair.label);
       }
     }
 
-    if (!completedLabels.length && !facilityEvents.length) continue;
-
-    const startEvents = facilityEvents.filter((e) => isWorkStartEvent(e.eventType));
+    const startEvents = taskEvents.filter((e) => isWorkStartEvent(e.eventType));
     const startEv = startEvents.length
       ? startEvents.sort((a, b) => a.time.getTime() - b.time.getTime())[0]
       : null;
-    const endEv = findLastMatchingEnd(facilityEvents, startEv);
+    const endEv = findLastMatchingEnd(taskEvents, startEv);
+
+    let arriveEv: RecordEvent | null = null;
+    if (startEv) {
+      const arrivals = events.filter(
+        (e) =>
+          e.eventType === "到着" &&
+          e.facility === facility &&
+          e.time.getTime() <= startEv.time.getTime()
+      );
+      arriveEv = arrivals.length ? arrivals[arrivals.length - 1] : null;
+    } else {
+      const arrivals = atFacility.filter((e) => e.eventType === "到着");
+      arriveEv = arrivals.length ? arrivals[arrivals.length - 1] : null;
+    }
+
+    let prepTime: number | null = null;
+    if (arriveEv && startEv) {
+      prepTime = minutesBetween(arriveEv.time, startEv.time);
+    }
+
+    let travelTime: number | null = null;
+    if (arriveEv && startEv) {
+      const arriveKey = `${arriveEv.time.getTime()}|${arriveEv.facility}`;
+      if (!arriveTravelAssigned.has(arriveKey)) {
+        const arriveIdx = events.findIndex(
+          (e) =>
+            e.eventType === "到着" &&
+            e.facility === arriveEv!.facility &&
+            e.time.getTime() === arriveEv!.time.getTime()
+        );
+        if (arriveIdx > 0) {
+          const prev = events[arriveIdx - 1];
+          if (prev.eventType === "出発" || prev.eventType === "終了") {
+            travelTime = minutesBetween(prev.time, arriveEv.time);
+          }
+        }
+        arriveTravelAssigned.add(arriveKey);
+      } else {
+        travelTime = 0;
+      }
+    }
 
     const summary = buildPatientSummary(
-      facilityEvents,
+      taskEvents.length ? taskEvents : atFacility,
       facility,
       completedLabels,
       startEv,
       endEv
     );
+    const workTime = workMinutes > 0 ? workMinutes : null;
+    const totalTime = sumMinutes([travelTime, prepTime, workTime]);
+
+    if (!completedLabels.length && !arriveEv && !startEv) continue;
 
     results.push({
       date: today,
@@ -211,10 +269,10 @@ function calcFacilityTaskSummary(
       patientId: FACILITY_WORK_PID,
       facilityName: facility,
       summary,
-      travelTime: "",
-      prepTime: "",
-      workTime: workMinutes > 0 ? workMinutes : "",
-      totalTime: workMinutes > 0 ? workMinutes : "",
+      travelTime: toCell(travelTime),
+      prepTime: toCell(prepTime),
+      workTime: toCell(workTime),
+      totalTime: toCell(totalTime),
     });
   }
 
@@ -223,6 +281,38 @@ function calcFacilityTaskSummary(
 
 function isFacilityTaskEvent(eventType: string): boolean {
   return FACILITY_TASK_PAIRS.some((p) => p.start === eventType || p.end === eventType);
+}
+
+/** 業務種別ごとの時間と割合（1日合計） */
+export function calcTaskTypeSummary(
+  records: RecordEvent[],
+  staffName: string,
+  jobType: string,
+  workplace: string,
+  today: string
+): TaskTypeSummaryRow[] {
+  const events = [...records].sort((a, b) => a.time.getTime() - b.time.getTime());
+  const rows: { taskLabel: string; workMinutes: number }[] = [];
+
+  for (const pair of TASK_PAIRS) {
+    const minutes = sumAllPairDurations(events, pair.start, pair.end);
+    if (minutes > 0) rows.push({ taskLabel: pair.label, workMinutes: minutes });
+  }
+
+  const total = rows.reduce((a, r) => a + r.workMinutes, 0);
+  if (total === 0) return [];
+
+  return rows
+    .sort((a, b) => b.workMinutes - a.workMinutes)
+    .map((r) => ({
+      date: today,
+      staffName,
+      jobType,
+      workplace,
+      taskLabel: r.taskLabel,
+      workMinutes: r.workMinutes,
+      sharePercent: Math.round((r.workMinutes / total) * 100),
+    }));
 }
 
 /** 患者別集計を施設ごとに合算 */
@@ -246,7 +336,7 @@ export function calcFacilitySummary(
 
   for (const e of events) {
     if (!e.facility || e.facility === "不明" || e.facility === "解析失敗") continue;
-    if (isFacilityTaskEvent(e.eventType) && !byFacility.has(e.facility)) {
+    if (!byFacility.has(e.facility)) {
       byFacility.set(e.facility, []);
     }
   }
@@ -285,6 +375,32 @@ function sumCells(values: (number | "")[]): number | "" {
   const nums = values.filter((v): v is number => v !== "" && !isNaN(v));
   if (nums.length === 0) return "";
   return nums.reduce((a, b) => a + b, 0);
+}
+
+function sumAllPairDurations(
+  events: RecordEvent[],
+  startType: string,
+  endType: string
+): number {
+  const starts = events
+    .filter((e) => e.eventType === startType)
+    .sort((a, b) => a.time.getTime() - b.time.getTime());
+  const ends = events
+    .filter((e) => e.eventType === endType)
+    .sort((a, b) => a.time.getTime() - b.time.getTime());
+
+  let total = 0;
+  let endIdx = 0;
+  for (const start of starts) {
+    while (endIdx < ends.length && ends[endIdx].time.getTime() < start.time.getTime()) {
+      endIdx++;
+    }
+    if (endIdx >= ends.length) break;
+    const diff = minutesBetween(start.time, ends[endIdx].time);
+    if (diff !== null && diff >= 0) total += diff;
+    endIdx++;
+  }
+  return total;
 }
 
 function pairTaskDuration(
@@ -372,6 +488,18 @@ export function summaryToArray(row: SummaryRow): (string | number)[] {
     row.prepTime,
     row.workTime,
     row.totalTime,
+  ];
+}
+
+export function taskTypeSummaryToArray(row: TaskTypeSummaryRow): (string | number)[] {
+  return [
+    row.date,
+    row.staffName,
+    row.jobType,
+    row.workplace,
+    row.taskLabel,
+    row.workMinutes,
+    row.sharePercent,
   ];
 }
 

@@ -573,6 +573,35 @@ input[type="text"]:last-of-type {
   border-radius: 10px;
 }
 
+.share-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.share-bar {
+  flex: 1;
+  height: 8px;
+  background: #fde8ea;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.share-fill {
+  height: 100%;
+  background: #fea3aa;
+  border-radius: 4px;
+  min-width: 2px;
+}
+
+.share-pct {
+  font-size: 12px;
+  font-weight: 600;
+  color: #8a5560;
+  min-width: 36px;
+  text-align: right;
+}
+
 .app-root {
   display: flex;
   flex-direction: column;

@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 import { extractEventInfo, type ParsedEvent } from "@/lib/claude";
-import { requiresPatientSelection } from "@/lib/events";
 import {
   buildDailySummaries,
   facilitySummaryToArray,
   summaryToArray,
+  taskTypeSummaryToArray,
 } from "@/lib/summary";
 import {
   appendRecordRowsToSheet,
@@ -23,16 +23,8 @@ import {
   type UserInfo,
 } from "@/lib/records";
 
-function resolvePatientId(eventType: string, selectedPatientPid?: string | null): string {
-  if (requiresPatientSelection(eventType)) {
-    if (!selectedPatientPid) {
-      throw new Error(
-        "患者に紐づく記録（診療・注射・点滴など）には、患者をタップで選んでください。"
-      );
-    }
-    return selectedPatientPid;
-  }
-  return "不明";
+function resolvePatientId(_eventType: string, selectedPatientPid?: string | null): string {
+  return selectedPatientPid || "不明";
 }
 
 function mergeEvents(
@@ -86,13 +78,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: message }, { status: 502 });
     }
 
-    let events;
-    try {
-      events = mergeEvents(rawEvents, selectedPatientPid);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "患者未選択";
-      return NextResponse.json({ success: false, error: message }, { status: 400 });
-    }
+    let events = mergeEvents(rawEvents, selectedPatientPid);
 
     const timestamp = new Date();
     const sheetRows: SheetRecordRow[] = events.map((ev) => ({
@@ -111,7 +97,7 @@ export async function POST(request: Request) {
 
     const { todayStr } = getTodayRange();
     const recordEvents = await getTodayRecordEvents(user, todayStr);
-    const { patientSummary, facilitySummary } = buildDailySummaries(
+    const { patientSummary, facilitySummary, taskSummary } = buildDailySummaries(
       recordEvents,
       user.staffName,
       user.jobType,
@@ -141,6 +127,7 @@ export async function POST(request: Request) {
       data: rowsForClient,
       summary: patientSummary.map(summaryToArray),
       facilitySummary: facilitySummary.map(facilitySummaryToArray),
+      taskSummary: taskSummary.map(taskTypeSummaryToArray),
       sheetsSynced: true,
     });
   } catch (err) {

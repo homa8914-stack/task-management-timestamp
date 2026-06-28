@@ -47,6 +47,7 @@ export default function AppShell() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [summaryData, setSummaryData] = useState<(string | number)[][]>([]);
   const [facilitySummaryData, setFacilitySummaryData] = useState<(string | number)[][]>([]);
+  const [taskSummaryData, setTaskSummaryData] = useState<(string | number)[][]>([]);
   const [patients, setPatients] = useState<LocalPatient[]>([]);
   const [patientNames, setPatientNames] = useState<Record<string, string>>({});
   const [selectedPatientPid, setSelectedPatientPid] = useState<string | null>(null);
@@ -74,6 +75,7 @@ export default function AppShell() {
     if (json.success && json.summary) {
       setSummaryData(json.summary);
       setFacilitySummaryData(json.facilitySummary ?? []);
+      setTaskSummaryData(json.taskSummary ?? []);
     }
   }, []);
 
@@ -169,6 +171,7 @@ export default function AppShell() {
 
       if (json.summary) setSummaryData(json.summary);
       if (json.facilitySummary) setFacilitySummaryData(json.facilitySummary);
+      if (json.taskSummary) setTaskSummaryData(json.taskSummary);
 
       setUtterance("");
       setTimeout(() => setRecordStatus({ msg: "", type: "" }), 3000);
@@ -178,7 +181,7 @@ export default function AppShell() {
   }
 
   function renderSummary() {
-    if (!summaryData.length && !facilitySummaryData.length) {
+    if (!summaryData.length && !facilitySummaryData.length && !taskSummaryData.length) {
       return (
         <div className="card">
           <div className="empty-state">
@@ -222,8 +225,69 @@ export default function AppShell() {
     const fTravelSum = fTravels.reduce((a, b) => a + b, 0);
     const fWorkSum = fWorks.reduce((a, b) => a + b, 0);
 
+    const taskTotal = taskSummaryData.reduce(
+      (a, r) => a + (parseFloat(String(r[5])) || 0),
+      0
+    );
+
     return (
       <>
+        {taskSummaryData.length > 0 && (
+          <div className="card">
+            <div className="card-label">業務別の内訳（今日）</div>
+            <div className="tbl-wrap">
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th style={{ width: "30%" }}>業務</th>
+                    <th style={{ width: "20%" }}>時間</th>
+                    <th style={{ width: "50%" }}>割合</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {taskSummaryData.map((r, i) => {
+                    const label = String(r[4] || "ー");
+                    const mins = parseFloat(String(r[5]));
+                    const pct = parseFloat(String(r[6]));
+                    return (
+                      <tr key={i}>
+                        <td>{label}</td>
+                        <td>
+                          {!isNaN(mins) ? (
+                            <MinuteBadge value={mins} cls="b-work" />
+                          ) : (
+                            <span className="dash">ー</span>
+                          )}
+                        </td>
+                        <td>
+                          <div className="share-row">
+                            <div className="share-bar">
+                              <div
+                                className="share-fill"
+                                style={{ width: `${isNaN(pct) ? 0 : pct}%` }}
+                              />
+                            </div>
+                            <span className="share-pct">{isNaN(pct) ? "ー" : `${pct}%`}</span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  <tr className="total-row">
+                    <td>合計</td>
+                    <td>
+                      <MinuteBadge value={taskTotal} cls="b-total" />
+                    </td>
+                    <td>
+                      <span className="share-pct">100%</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
         <div className="card">
           <div className="card-label">今日のサマリー</div>
           <div className="metric-grid">
@@ -271,7 +335,7 @@ export default function AppShell() {
         </div>
 
         <div className="card">
-          <div className="card-label">患者別の内訳</div>
+          <div className="card-label">施設別サマリー</div>
           <div className="legend">
             <span className="badge b-travel">移動</span>
             <span className="badge b-prep">準備</span>
@@ -282,7 +346,7 @@ export default function AppShell() {
             <table className="tbl">
               <thead>
                 <tr>
-                  <th style={{ width: "25%" }}>患者名</th>
+                  <th style={{ width: "25%" }}>施設</th>
                   <th style={{ width: "18%" }}>移動</th>
                   <th style={{ width: "18%" }}>準備</th>
                   <th style={{ width: "19%" }}>診療</th>
@@ -292,7 +356,10 @@ export default function AppShell() {
               <tbody>
                 {summaryData.map((r, i) => {
                   const pid = String(r[4] || "ー");
-                  const displayName = displayPatient(pid);
+                  const displayName =
+                    pid === FACILITY_WORK_PID
+                      ? String(r[5] || "（施設）").split("｜")[0] || "（施設）"
+                      : displayPatient(pid);
                   return (
                     <tr key={i}>
                       <td>{displayName}</td>
@@ -500,11 +567,11 @@ export default function AppShell() {
         <div className="card">
           <div className="card-label">業務を記録</div>
           <div className="privacy-note">
-            <b>最初は施設名だけでOK。</b> 音声で施設名＋業務（到着・カルテ記載・注射など）を話してください。患者名は話さないでください（Claude に名前は送りません）。
+            <b>最初は施設名だけでOK。</b>「ひまわりに到着」「診療を始めます」「ひまわりでの診療を終わりました」のように話してください。
           </div>
 
           <details className="patient-picker-optional">
-            <summary>患者を選択（診療・注射などのとき。カルテ記載・到着だけなら省略可）</summary>
+            <summary>患者を選択（任意・通常は不要）</summary>
             <div className="patient-picker">
             <div className="patient-picker-label">
               患者を選択（診療・注射・点滴などの記録時に必須）

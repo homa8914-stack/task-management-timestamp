@@ -3,6 +3,7 @@ import {
   buildDailySummaries,
   facilitySummaryToArray,
   summaryToArray,
+  taskTypeSummaryToArray,
 } from "@/lib/summary";
 import { isSheetsConfigured } from "@/lib/sheets";
 import { getTodayRange, getTodayRecordEvents, normalizeUser, type UserInfo } from "@/lib/records";
@@ -26,7 +27,7 @@ export async function POST(request: Request) {
 
     const { todayStr } = getTodayRange();
     const recordEvents = await getTodayRecordEvents(user, todayStr);
-    const { patientSummary, facilitySummary } = buildDailySummaries(
+    const { patientSummary, facilitySummary, taskSummary } = buildDailySummaries(
       recordEvents,
       user.staffName,
       user.jobType,
@@ -38,6 +39,7 @@ export async function POST(request: Request) {
       success: true,
       summary: patientSummary.map(summaryToArray),
       facilitySummary: facilitySummary.map(facilitySummaryToArray),
+      taskSummary: taskSummary.map(taskTypeSummaryToArray),
     });
   } catch (err) {
     return NextResponse.json(
