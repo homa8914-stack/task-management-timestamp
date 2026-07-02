@@ -84,6 +84,52 @@ export function normalizeEventType(raw: string): EventType {
   return "不明";
 }
 
+/**
+ * 発話文そのものからイベント種別を決定論的に検出する。
+ * 音声コマンドは定型なので、AI に頼らずキーワードで確実に判定する。
+ * 具体的な業務（注射・点滴など）を先に判定し、汎用の「診療」は最後に判定する。
+ */
+const UTTERANCE_RULES: { re: RegExp; type: EventType }[] = [
+  { re: /カルテ[^。、]*(終わ|終了|おわ)/, type: "カルテ記載終了" },
+  { re: /カルテ[^。、]*(始め|開始|はじめ)/, type: "カルテ記載開始" },
+  { re: /注射[^。、]*(終わ|終了|おわ)/, type: "注射終了" },
+  { re: /注射[^。、]*(始め|開始|はじめ)/, type: "注射開始" },
+  { re: /点滴[^。、]*(終わ|終了|おわ)/, type: "点滴終了" },
+  { re: /点滴[^。、]*(始め|開始|はじめ)/, type: "点滴開始" },
+  { re: /バイタル[^。、]*(終わ|終了|おわ)/, type: "バイタル終了" },
+  { re: /バイタル[^。、]*(始め|開始|はじめ)/, type: "バイタル開始" },
+  { re: /処置[^。、]*(終わ|終了|おわ)/, type: "処置終了" },
+  { re: /処置[^。、]*(始め|開始|はじめ)/, type: "処置開始" },
+  { re: /出発|しゅっぱつ/, type: "出発" },
+  { re: /到着|着きました|つきました|到着しました/, type: "到着" },
+  { re: /診療[^。、]*(終わ|終了|おわ)/, type: "終了" },
+  { re: /診療[^。、]*(始め|開始|はじめ)/, type: "開始" },
+];
+
+/** 業務キーワードを含まない汎用の開始/終了（最後の砦・診療扱い） */
+const BARE_END = /(終わりました|終わります|終了しました|終了します|終わり)/;
+const BARE_START = /(始めます|始めました|開始します|開始しました|始め)/;
+
+export function detectEventTypesFromUtterance(utterance: string): EventType[] {
+  const t = utterance.replace(/\s/g, "");
+  const found: EventType[] = [];
+
+  for (const { re, type } of UTTERANCE_RULES) {
+    if (re.test(t) && !found.includes(type)) {
+      found.push(type);
+    }
+  }
+
+  // 業務語なしの「始めます／終わります」だけの場合は診療として扱う
+  const hasTaskWord = /(カルテ|注射|点滴|バイタル|処置|診療)/.test(t);
+  if (!hasTaskWord) {
+    if (BARE_END.test(t) && !found.includes("終了")) found.push("終了");
+    if (BARE_START.test(t) && !found.includes("開始")) found.push("開始");
+  }
+
+  return found;
+}
+
 /** 患者タップは不要（将来の PID 記録用に任意） */
 export function requiresPatientSelection(_eventType: string): boolean {
   return false;

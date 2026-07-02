@@ -1,6 +1,7 @@
 import { loadEnvConfig } from "@next/env";
 import {
   claudeEventMappingHints,
+  detectEventTypesFromUtterance,
   eventTypesForClaudePrompt,
   normalizeEventType,
 } from "./events";
@@ -134,18 +135,43 @@ ${facilityInstruction}
 返却形式:
 [{"eventType": "イベント種別", "facilityName": "施設名"}]`;
 
-  const raw = await callClaude(prompt, 512);
-  const parsed = extractJson<ParsedEvent[]>(raw, "[");
+  // まず発話キーワードから決定論的にイベントを検出（AIに依存しない確実な判定）
+  const keywordEvents = detectEventTypesFromUtterance(utterance);
 
-  if (!Array.isArray(parsed) || parsed.length === 0) {
-    console.error("[extractEventInfo] JSON parse failed:", raw.slice(0, 200));
+  let aiEvents: ParsedEvent[] = [];
+  let aiFacility = "不明";
+  try {
+    const raw = await callClaude(prompt, 512);
+    const parsed = extractJson<ParsedEvent[]>(raw, "[");
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      aiEvents = parsed.map((ev) => ({
+        eventType: normalizeEventType(ev.eventType || "不明"),
+        facilityName: ev.facilityName || "不明",
+      }));
+      const withFacility = aiEvents.find(
+        (e) => e.facilityName && e.facilityName !== "不明"
+      );
+      if (withFacility) aiFacility = withFacility.facilityName;
+    }
+  } catch (err) {
+    // AI が失敗してもキーワード検出があれば記録を続行する
+    console.error("[extractEventInfo] AI parse failed:", err);
+    if (keywordEvents.length === 0) throw err;
+  }
+
+  // キーワードで検出できた場合はそれを優先（施設名は AI の結果を利用）
+  if (keywordEvents.length > 0) {
+    return keywordEvents.map((eventType) => ({
+      eventType,
+      facilityName: aiFacility,
+    }));
+  }
+
+  if (aiEvents.length === 0) {
     throw new Error("発話内容の解析に失敗しました（JSON形式エラー）");
   }
 
-  return parsed.map((ev) => ({
-    eventType: normalizeEventType(ev.eventType || "不明"),
-    facilityName: ev.facilityName || "不明",
-  }));
+  return aiEvents;
 }
 
 /** @deprecated extractEventInfo を使用（患者名をAIに送らない） */

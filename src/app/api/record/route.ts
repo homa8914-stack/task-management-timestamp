@@ -80,6 +80,24 @@ export async function POST(request: Request) {
 
     let events = mergeEvents(rawEvents, selectedPatientPid);
 
+    // 施設名が「不明」の業務は、当日の直近の施設名を引き継ぐ
+    // （「〇〇に到着」→ 別発話で「診療を始めます」でも施設に紐づくように）
+    const { todayStr } = getTodayRange();
+    const priorEvents = await getTodayRecordEvents(user, todayStr);
+    let lastFacility = "不明";
+    for (const e of priorEvents) {
+      if (e.facility && e.facility !== "不明" && e.facility !== "解析失敗") {
+        lastFacility = e.facility;
+      }
+    }
+    events = events.map((ev) => {
+      if (ev.facilityName && ev.facilityName !== "不明" && ev.facilityName !== "解析失敗") {
+        lastFacility = ev.facilityName;
+        return ev;
+      }
+      return { ...ev, facilityName: lastFacility };
+    });
+
     const timestamp = new Date();
     const sheetRows: SheetRecordRow[] = events.map((ev) => ({
       timestamp,
@@ -95,7 +113,6 @@ export async function POST(request: Request) {
     assertSheetsConfigured();
     await appendRecordRowsToSheet(sheetRows);
 
-    const { todayStr } = getTodayRange();
     const recordEvents = await getTodayRecordEvents(user, todayStr);
     const { patientSummary, facilitySummary, taskSummary } = buildDailySummaries(
       recordEvents,
